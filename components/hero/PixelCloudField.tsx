@@ -8,6 +8,13 @@ const SKY = "#2984ce";
 const FLIGHT_DURATION = 20_000;
 const FRICTION = 0.84;
 const SPRING = 0.075;
+// The cloud surface drifts by at most 41px horizontally and 16px vertically.
+// Keep a mirrored perimeter offscreen so motion never exposes a hard viewport
+// edge or an empty corner.
+const CLOUD_OVERSCAN = 52;
+// A single continuous cloud surface guarantees there can never be a visible
+// layer seam through a connected cloud bank.
+const CLOUD_GROUPS = 1;
 
 type Tile = {
   homeX: number;
@@ -17,6 +24,9 @@ type Tile = {
   vx: number;
   vy: number;
   color: string;
+  driftGroup: number;
+  float: number;
+  phase: number;
 };
 
 type ForceSource = {
@@ -30,9 +40,15 @@ function isCloud(red: number, green: number, blue: number) {
   return red > 102 && green > 116 && blue > 128 && blue - red < 88;
 }
 
-function applyForce(tile: Tile, source: ForceSource, frameScale: number) {
-  const dx = tile.x - source.x;
-  const dy = tile.y - source.y;
+function applyForce(
+  tile: Tile,
+  source: ForceSource,
+  frameScale: number,
+  offsetX = 0,
+  offsetY = 0,
+) {
+  const dx = tile.x + offsetX - source.x;
+  const dy = tile.y + offsetY - source.y;
   const distance = Math.hypot(dx, dy) || 0.001;
   if (distance >= source.radius) return;
 
@@ -68,6 +84,7 @@ export function PixelCloudField() {
     let tiles: Tile[] = [];
     let active = new Int32Array(0);
     let base: HTMLCanvasElement | null = null;
+    let cloudLayers: HTMLCanvasElement[] = [];
     let planeSprite: HTMLCanvasElement | null = null;
     let frame = 0;
     let resizeFrame = 0;
@@ -120,12 +137,12 @@ export function PixelCloudField() {
       canvas.height = Math.round(height * dpr);
 
       const targetCell =
-        width < 640 ? 5 : Math.max(4.5, Math.min(6, width / 250));
+        width < 640 ? 4 : Math.max(4, Math.min(4.75, width / 285));
       const columns = Math.max(42, Math.round(width / targetCell));
       const rows = Math.max(58, Math.round(height / targetCell));
       cellWidth = width / columns;
       cellHeight = height / rows;
-      tileSize = Math.min(cellWidth, cellHeight) * 0.76;
+      tileSize = Math.min(cellWidth, cellHeight) * 0.72;
 
       const sampler = document.createElement("canvas");
       sampler.width = columns;
@@ -180,10 +197,14 @@ export function PixelCloudField() {
           const normalizedY = (row + 0.5) / rows;
           const copyClearance =
             width < 700 ? 0.94 : width < 1000 ? 0.76 : 0.58;
+          const edgeWarp =
+            Math.sin(normalizedX * 14.3) * 0.012 +
+            Math.sin(normalizedX * 41.7 + 1.2) * 0.007 +
+            (pixelNoise / 100 - 0.5) * 0.012;
+          const copyX = normalizedX / copyClearance;
+          const copyY = Math.abs(normalizedY + edgeWarp - 0.505) / 0.115;
           const copyCorridor =
-            normalizedY > 0.4 &&
-            normalizedY < 0.61 &&
-            normalizedX < copyClearance;
+            copyX < 1 && Math.pow(copyX, 6) + Math.pow(copyY, 6) < 1;
           if (copyCorridor) continue;
 
           const homeX = (column + 0.5) * cellWidth;
@@ -199,6 +220,12 @@ export function PixelCloudField() {
             vx: 0,
             vy: 0,
             color: `rgb(${liftedRed} ${liftedGreen} ${liftedBlue})`,
+            driftGroup: 0,
+            float: cloudDensity < 0.86 ? (0.86 - cloudDensity) * 7 : 0,
+            phase:
+              (pixelNoise / 100) * Math.PI * 2 +
+              normalizedX * 2.1 +
+              normalizedY * 3.7,
           });
         }
       }
@@ -213,15 +240,47 @@ export function PixelCloudField() {
       baseContext.setTransform(dpr, 0, 0, dpr, 0, 0);
       baseContext.fillStyle = SKY;
       baseContext.fillRect(0, 0, width, height);
+
+      cloudLayers = Array.from({ length: CLOUD_GROUPS }, () => {
+        const layer = document.createElement("canvas");
+        layer.width = Math.round((width + CLOUD_OVERSCAN * 2) * dpr);
+        layer.height = Math.round((height + CLOUD_OVERSCAN * 2) * dpr);
+        return layer;
+      });
+      const layerContexts = cloudLayers.map((layer) => {
+        const layerContext = layer.getContext("2d");
+        layerContext?.setTransform(dpr, 0, 0, dpr, 0, 0);
+        return layerContext;
+      });
       const half = tileSize / 2;
       for (const tile of tiles) {
-        baseContext.fillStyle = tile.color;
-        baseContext.fillRect(
-          Math.round(tile.homeX - half),
-          Math.round(tile.homeY - half),
-          Math.ceil(tileSize),
-          Math.ceil(tileSize),
-        );
+        const layerContext = layerContexts[tile.driftGroup];
+        if (!layerContext) continue;
+        layerContext.fillStyle = tile.color;
+        const positionsX = [tile.homeX];
+        const positionsY = [tile.homeY];
+
+        // Reflect edge pixels into the overscan region. Combining the reflected
+        // X and Y positions also fills all four offscreen corners.
+        if (tile.homeX < CLOUD_OVERSCAN) positionsX.push(-tile.homeX);
+        if (tile.homeX > width - CLOUD_OVERSCAN) {
+          positionsX.push(width * 2 - tile.homeX);
+        }
+        if (tile.homeY < CLOUD_OVERSCAN) positionsY.push(-tile.homeY);
+        if (tile.homeY > height - CLOUD_OVERSCAN) {
+          positionsY.push(height * 2 - tile.homeY);
+        }
+
+        for (const positionX of positionsX) {
+          for (const positionY of positionsY) {
+            layerContext.fillRect(
+              Math.round(positionX + CLOUD_OVERSCAN - half),
+              Math.round(positionY + CLOUD_OVERSCAN - half),
+              Math.ceil(tileSize),
+              Math.ceil(tileSize),
+            );
+          }
+        }
       }
 
       planeSprite = document.createElement("canvas");
@@ -238,13 +297,27 @@ export function PixelCloudField() {
       ready = true;
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.drawImage(base, 0, 0);
+      for (const layer of cloudLayers) {
+        context.drawImage(
+          layer,
+          Math.round(-CLOUD_OVERSCAN * dpr),
+          Math.round(-CLOUD_OVERSCAN * dpr),
+        );
+      }
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawPlane(reducedMotion ? startedAt + FLIGHT_DURATION * 0.36 : performance.now());
     };
 
     const tick = (time: number) => {
       frame = requestAnimationFrame(tick);
-      if (!ready || !base || document.hidden) return;
+      if (
+        !ready ||
+        !base ||
+        cloudLayers.length !== CLOUD_GROUPS ||
+        document.hidden
+      ) {
+        return;
+      }
 
       const frameScale = Math.min(2, Math.max(0.5, (time - previousTime) / 16.67));
       previousTime = time;
@@ -256,6 +329,14 @@ export function PixelCloudField() {
         strength: 1.7,
       };
       const plane = planeState(time);
+      const cloudDrifts = cloudLayers.map(() => {
+        return {
+          x:
+            Math.sin(time * 0.00028) * 32 +
+            Math.sin(time * 0.00011 + 1.4) * 9,
+          y: Math.cos(time * 0.00021) * 16,
+        };
+      });
       const planeCos = Math.cos(plane.rotation);
       const planeSin = Math.sin(plane.rotation);
       const planePoint = (localX: number, localY: number) => ({
@@ -293,14 +374,30 @@ export function PixelCloudField() {
 
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.drawImage(base, 0, 0);
+      for (let group = 0; group < cloudLayers.length; group += 1) {
+        const drift = cloudDrifts[group];
+        context.drawImage(
+          cloudLayers[group],
+          Math.round((drift.x - CLOUD_OVERSCAN) * dpr),
+          Math.round((drift.y - CLOUD_OVERSCAN) * dpr),
+        );
+      }
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       let activeCount = 0;
       for (let index = 0; index < tiles.length; index += 1) {
         const tile = tiles[index];
-        if (pointer.active) applyForce(tile, pointerSource, frameScale);
-        const planeDeltaX = tile.x - plane.x;
-        const planeDeltaY = tile.y - plane.y;
+        const drift = cloudDrifts[tile.driftGroup];
+        const edgeX = Math.sin(time * 0.00042 + tile.phase) * tile.float;
+        const edgeY =
+          Math.cos(time * 0.00036 + tile.phase * 1.37) * tile.float * 0.65;
+        const offsetX = drift.x + edgeX;
+        const offsetY = drift.y + edgeY;
+        if (pointer.active) {
+          applyForce(tile, pointerSource, frameScale, offsetX, offsetY);
+        }
+        const planeDeltaX = tile.x + offsetX - plane.x;
+        const planeDeltaY = tile.y + offsetY - plane.y;
         const planeLocalX =
           planeDeltaX * planeCos + planeDeltaY * planeSin;
         const planeLocalY =
@@ -310,7 +407,7 @@ export function PixelCloudField() {
           Math.abs(planeLocalY) < plane.height * 0.72;
         if (nearPlane) {
           for (const source of planeSources) {
-            applyForce(tile, source, frameScale);
+            applyForce(tile, source, frameScale, offsetX, offsetY);
           }
         }
 
@@ -337,14 +434,15 @@ export function PixelCloudField() {
 
         if (
           Math.abs(tile.x - tile.homeX) > 0.25 ||
-          Math.abs(tile.y - tile.homeY) > 0.25
+          Math.abs(tile.y - tile.homeY) > 0.25 ||
+          tile.float > 0
         ) {
           active[activeCount] = index;
           activeCount += 1;
           context.fillStyle = SKY;
           context.fillRect(
-            Math.round(tile.homeX - cellWidth / 2),
-            Math.round(tile.homeY - cellHeight / 2),
+            Math.round(tile.homeX + drift.x - cellWidth / 2),
+            Math.round(tile.homeY + drift.y - cellHeight / 2),
             Math.ceil(cellWidth),
             Math.ceil(cellHeight),
           );
@@ -354,10 +452,14 @@ export function PixelCloudField() {
       const half = tileSize / 2;
       for (let index = 0; index < activeCount; index += 1) {
         const tile = tiles[active[index]];
+        const drift = cloudDrifts[tile.driftGroup];
+        const edgeX = Math.sin(time * 0.00042 + tile.phase) * tile.float;
+        const edgeY =
+          Math.cos(time * 0.00036 + tile.phase * 1.37) * tile.float * 0.65;
         context.fillStyle = tile.color;
         context.fillRect(
-          Math.round(tile.x - half),
-          Math.round(tile.y - half),
+          Math.round(tile.x + drift.x + edgeX - half),
+          Math.round(tile.y + drift.y + edgeY - half),
           Math.ceil(tileSize),
           Math.ceil(tileSize),
         );

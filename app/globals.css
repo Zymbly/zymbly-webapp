@@ -61,8 +61,8 @@ a {
   top: 2.9vw;
   left: 2.4vw;
   display: block;
-  width: 12.4vw;
-  height: 15.1vw;
+  width: clamp(32px, 3.2vw, 48px);
+  aspect-ratio: 79 / 96;
   line-height: 0;
   outline: none;
 }
@@ -101,8 +101,8 @@ a {
   .brand-mark {
     top: 24px;
     left: 24px;
-    width: 52px;
-    height: auto;
+    width: 22px;
+    aspect-ratio: 79 / 96;
   }
 
   .brand-mark img {
