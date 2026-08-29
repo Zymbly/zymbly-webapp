@@ -1,0 +1,36 @@
+{
+  "name": "zymbly-webapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zymbly — aircraft maintenance, clearly coordinated.",
+  "scripts": {
+    "dev": "next dev -p 4567",
+    "build": "next build",
+    "start": "next start -p 4567",
+    "lint": "eslint ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zymbly/zymbly-webapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/Zymbly/zymbly-webapp/issues"
+  },
+  "homepage": "https://github.com/Zymbly/zymbly-webapp#readme",
+  "dependencies": {
+    "next": "^16.3.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.3",
+    "typescript": "^6.0.3"
+  }
+}
